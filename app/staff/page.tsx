@@ -1,9 +1,13 @@
 
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/client";
+
+// ==========================================
+// CampusFix - Staff Management
+// ==========================================
 
 const supabase = createClient();
 
@@ -11,64 +15,61 @@ const supabase = createClient();
 // 資料型別
 // ==========================================
 
+type ReportStatus = "Submitted" | "In Progress" | "Resolved";
+
+type StatusFilter = "All" | ReportStatus;
+
+type AccessState =
+  | "checking"
+  | "guest"
+  | "denied"
+  | "staff"
+  | "error";
+
 type Report = {
   id: string;
   title: string;
   category: string;
   location: string;
   description: string;
-  status: string;
+  status: ReportStatus;
   resolution: string | null;
   created_at: string;
 };
 
-type AccessState =
-  | "loading"
-  | "login"
-  | "denied"
-  | "staff"
-  | "error";
-
-type StatusFilter =
-  | "All"
-  | "Submitted"
-  | "In Progress"
-  | "Resolved";
+type Notice = {
+  type: "success" | "error";
+  text: string;
+} | null;
 
 // ==========================================
-// 狀態顯示
+// 狀態文字與顏色
 // ==========================================
 
-function getStatusInfo(status: string) {
-  switch (status) {
-    case "Submitted":
-      return {
-        label: "待處理",
-        color: "bg-yellow-100 text-yellow-800",
-      };
+const statusText: Record<ReportStatus, string> = {
+  Submitted: "待處理",
+  "In Progress": "處理中",
+  Resolved: "已結案",
+};
 
-    case "In Progress":
-      return {
-        label: "處理中",
-        color: "bg-blue-100 text-blue-800",
-      };
+const statusStyle: Record<ReportStatus, string> = {
+  Submitted: "bg-amber-100 text-amber-800",
+  "In Progress": "bg-blue-100 text-blue-800",
+  Resolved: "bg-emerald-100 text-emerald-800",
+};
 
-    case "Resolved":
-      return {
-        label: "已結案",
-        color: "bg-green-100 text-green-800",
-      };
-
-    default:
-      return {
-        label: status,
-        color: "bg-slate-100 text-slate-700",
-      };
-  }
-}
+// ==========================================
+// 時間格式
+// ==========================================
 
 function formatDate(value: string) {
-  return new Date(value).toLocaleString("zh-TW", {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleString("zh-TW", {
     timeZone: "Asia/Taipei",
     year: "numeric",
     month: "2-digit",
@@ -80,565 +81,761 @@ function formatDate(value: string) {
 }
 
 // ==========================================
-// 工作人員管理頁面
+// Staff 管理頁面
 // ==========================================
 
 export default function StaffPage() {
+  // 工作人員權限
   const [access, setAccess] =
-    useState<AccessState>("loading");
+    useState<AccessState>("checking");
 
+  const [accessError, setAccessError] = useState("");
+
+  // 通報資料
   const [reports, setReports] = useState<Report[]>([]);
 
+  const [loadingReports, setLoadingReports] =
+    useState(false);
+
+  const [reportsError, setReportsError] = useState("");
+
+  // 篩選條件
   const [filter, setFilter] =
     useState<StatusFilter>("All");
 
-  const [drafts, setDrafts] =
-    useState<Record<string, string>>({});
-
+  // 正在處理的通報
   const [busyId, setBusyId] =
     useState<string | null>(null);
 
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-  const [refreshKey, setRefreshKey] = useState(0);
+  // 各通報的結案內容
+  const [drafts, setDrafts] =
+    useState<Record<string, string>>({});
+
+  // 操作訊息
+  const [notice, setNotice] =
+    useState<Notice>(null);
 
   // ==========================================
-  // S6：驗證 Staff 身分並讀取通報
+  // S6：讀取通報資料
   // ==========================================
 
-  useEffect(() => {
-    let active = true;
-
-    async function loadData() {
-      setAccess("loading");
-      setError("");
-
-      try {
-        // 1. 驗證登入使用者
-        const {
-          data: { user },
-          error: authError,
-        } = await supabase.auth.getUser();
-
-        if (!active) return;
-
-        if (authError || !user) {
-          setAccess("login");
-          return;
-        }
-
-        // 2. 確認是否在 staff_members
-        const {
-          data: staff,
-          error: staffError,
-        } = await supabase
-          .from("staff_members")
-          .select("user_id")
-          .eq("user_id", user.id)
-          .maybeSingle();
-
-        if (!active) return;
-
-        if (staffError) {
-          throw new Error(
-            "工作人員權限查詢失敗：" +
-            staffError.message
-          );
-        }
-
-        if (!staff) {
-          setAccess("denied");
-          return;
-        }
-
-        // 3. 讀取通報資料
-        const {
-          data,
-          error: reportsError,
-        } = await supabase
-          .from("reports")
-          .select(
-            "id,title,category,location,description,status,resolution,created_at"
-          )
-          .order("created_at", {
-            ascending: false,
-          })
-          .limit(100);
-
-        if (!active) return;
-
-        if (reportsError) {
-          throw new Error(reportsError.message);
-        }
-
-        setReports((data ?? []) as Report[]);
-        setAccess("staff");
-
-      } catch (err) {
-        if (!active) return;
-
-        setError(
-          err instanceof Error
-            ? err.message
-            : "無法讀取資料"
-        );
-
-        setAccess("error");
-      }
-    }
-
-    void loadData();
-
-    return () => {
-      active = false;
-    };
-  }, [refreshKey]);
-
-  // ==========================================
-  // S7 + S8：更新通報處理狀態
-  // ==========================================
-
-  async function updateReport(
-    report: Report,
-    nextStatus: "In Progress" | "Resolved"
-  ) {
-    if (busyId) return;
-
-    setError("");
-    setMessage("");
-
-    const isResolving = nextStatus === "Resolved";
-    const resolution = (drafts[report.id] ?? "").trim();
-
-    // 基本流程檢查
-    if (
-      nextStatus === "In Progress" &&
-      report.status !== "Submitted"
-    ) {
-      setError("只有待處理通報可以開始處理。");
-      return;
-    }
-
-    if (
-      isResolving &&
-      report.status !== "In Progress"
-    ) {
-      setError("請先開始處理，再進行結案。");
-      return;
-    }
-
-    if (isResolving && resolution.length < 10) {
-      setError("結案說明至少需要 10 個字。");
-      return;
-    }
-
-    setBusyId(report.id);
+  const loadReports = useCallback(async () => {
+    setLoadingReports(true);
+    setReportsError("");
 
     try {
-      // 再次確認登入狀態
+      const { data, error } = await supabase
+        .from("reports")
+        .select(
+          "id,title,category,location,description,status,resolution,created_at"
+        )
+        .order("created_at", {
+          ascending: false,
+        })
+        .limit(100);
+
+      if (error) {
+        throw error;
+      }
+
+      setReports((data ?? []) as Report[]);
+
+    } catch (error) {
+      setReportsError(
+        error instanceof Error
+          ? error.message
+          : "讀取通報失敗，請稍後再試。"
+      );
+
+    } finally {
+      setLoadingReports(false);
+    }
+  }, []);
+
+  // ==========================================
+  // 檢查登入與 Staff 身分
+  // ==========================================
+
+  const checkAccess = useCallback(async () => {
+    setAccess("checking");
+    setAccessError("");
+
+    try {
+      // 取得登入使用者
       const {
         data: { user },
         error: authError,
       } = await supabase.auth.getUser();
 
       if (authError || !user) {
-        throw new Error("登入已失效，請重新登入。");
+        setAccess("guest");
+        return;
       }
 
-      // 僅修改狀態及結案說明
-      const updates = isResolving
-        ? {
-            status: "Resolved",
-            resolution: resolution,
-          }
-        : {
-            status: "In Progress",
-          };
-
+      // 查詢是否具有 Staff 身分
       const {
-        data,
-        error: updateError,
+        data: staff,
+        error: staffError,
       } = await supabase
-        .from("reports")
-        .update(updates)
-        .eq("id", report.id)
-        .eq("status", report.status)
-        .select("id,status")
+        .from("staff_members")
+        .select("user_id")
+        .eq("user_id", user.id)
         .maybeSingle();
 
-      if (updateError) {
-        throw new Error(updateError.message);
+      if (staffError) {
+        throw staffError;
       }
 
-      // 無資料更新時，不可顯示成功
+      // 有工作人員資格才可以進入
+      setAccess(staff ? "staff" : "denied");
+
+    } catch (error) {
+      setAccessError(
+        error instanceof Error
+          ? error.message
+          : "工作人員身分確認失敗。"
+      );
+
+      setAccess("error");
+    }
+  }, []);
+
+  // ==========================================
+  // 頁面載入時檢查權限
+  // ==========================================
+
+  useEffect(() => {
+    void checkAccess();
+  }, [checkAccess]);
+
+  // Staff 登入後載入通報
+  useEffect(() => {
+    if (access === "staff") {
+      void loadReports();
+    }
+  }, [access, loadReports]);
+
+  // ==========================================
+  // 通報狀態統計
+  // ==========================================
+
+  const counts = useMemo(
+    () => ({
+      Submitted: reports.filter(
+        (report) => report.status === "Submitted"
+      ).length,
+
+      "In Progress": reports.filter(
+        (report) => report.status === "In Progress"
+      ).length,
+
+      Resolved: reports.filter(
+        (report) => report.status === "Resolved"
+      ).length,
+    }),
+    [reports]
+  );
+
+  // ==========================================
+  // 通報狀態篩選
+  // ==========================================
+
+  const visibleReports = useMemo(() => {
+    if (filter === "All") {
+      return reports;
+    }
+
+    return reports.filter(
+      (report) => report.status === filter
+    );
+  }, [reports, filter]);
+
+  // ==========================================
+  // S7：開始處理通報
+  // Submitted → In Progress
+  // ==========================================
+
+  async function startProcessing(report: Report) {
+    if (busyId) return;
+
+    setBusyId(report.id);
+    setNotice(null);
+
+    try {
+      const { data, error } = await supabase
+        .from("reports")
+        .update({
+          status: "In Progress",
+        })
+        .eq("id", report.id)
+        .eq("status", "Submitted")
+        .select("id")
+        .maybeSingle();
+
+      if (error) {
+        throw error;
+      }
+
       if (!data) {
         throw new Error(
-          "更新未成功：可能沒有修改權限，或通報狀態已被其他人更新。"
+          "未能更新案件，可能已被其他工作人員處理。請重新整理。"
         );
       }
 
-      setMessage(
-        isResolving
-          ? `「${report.title}」已完成結案。`
-          : `「${report.title}」已開始處理。`
-      );
+      // 更新列表
+      await loadReports();
 
-      // 更新成功後重新讀取列表
-      setRefreshKey((value) => value + 1);
+      setNotice({
+        type: "success",
+        text: `「${report.title}」已更新為處理中。`,
+      });
 
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "更新失敗"
-      );
+    } catch (error) {
+      setNotice({
+        type: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "開始處理失敗。",
+      });
+
     } finally {
       setBusyId(null);
     }
   }
 
   // ==========================================
-  // 篩選與統計
+  // S8：完成結案
+  // In Progress → Resolved
   // ==========================================
 
-  const visibleReports =
-    filter === "All"
-      ? reports
-      : reports.filter((r) => r.status === filter);
+  async function finishProcessing(report: Report) {
+    if (busyId) return;
 
-  const submittedCount = reports.filter(
-    (r) => r.status === "Submitted"
-  ).length;
+    const resolution =
+      (drafts[report.id] ?? "").trim();
 
-  const progressCount = reports.filter(
-    (r) => r.status === "In Progress"
-  ).length;
+    // 檢查結案說明
+    if (
+      resolution.length < 10 ||
+      resolution.length > 2000
+    ) {
+      setNotice({
+        type: "error",
+        text: "結案說明需要 10～2000 個字元。",
+      });
+      return;
+    }
 
-  const resolvedCount = reports.filter(
-    (r) => r.status === "Resolved"
-  ).length;
+    setBusyId(report.id);
+    setNotice(null);
+
+    try {
+      const { data, error } = await supabase
+        .from("reports")
+        .update({
+          status: "Resolved",
+          resolution,
+        })
+        .eq("id", report.id)
+        .eq("status", "In Progress")
+        .select("id")
+        .maybeSingle();
+
+      if (error) {
+        throw error;
+      }
+
+      if (!data) {
+        throw new Error(
+          "未能完成結案，可能通報狀態已改變。請重新整理。"
+        );
+      }
+
+      // 清除結案草稿
+      setDrafts((previous) => {
+        const next = { ...previous };
+        delete next[report.id];
+        return next;
+      });
+
+      // 更新資料
+      await loadReports();
+
+      setNotice({
+        type: "success",
+        text: `「${report.title}」已完成結案。`,
+      });
+
+    } catch (error) {
+      setNotice({
+        type: "error",
+        text:
+          error instanceof Error
+            ? error.message
+            : "完成結案失敗。",
+      });
+
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   // ==========================================
-  // 畫面
+  // 工作人員管理介面
   // ==========================================
 
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-800">
+    <main className="min-h-screen bg-slate-50 px-5 py-10 text-slate-800">
 
-      {/* 上方導覽 */}
-      <header className="border-b bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-5">
-          <Link
-            href="/"
-            className="text-2xl font-bold text-blue-700"
-          >
-            CampusFix
-          </Link>
+      <div className="mx-auto max-w-5xl">
 
-          <span className="rounded-full bg-slate-100 px-4 py-2 text-sm">
-            Staff Management
-          </span>
-        </div>
-      </header>
-
-      <section className="mx-auto max-w-6xl px-6 py-12">
-
+        {/* 返回首頁 */}
         <Link
           href="/"
-          className="text-sm text-blue-700 hover:underline"
+          className="text-sm font-medium text-blue-700 hover:underline"
         >
           ← 返回首頁
         </Link>
 
+        {/* 頁面標題 */}
         <div className="mt-5 flex flex-wrap items-center justify-between gap-4">
+
           <div>
             <h1 className="text-3xl font-bold">
               工作人員管理系統
             </h1>
 
-            <p className="mt-3 text-slate-500">
+            <p className="mt-2 text-sm text-slate-500">
               檢視、處理及結案校園問題通報
             </p>
           </div>
 
-          <button
-            type="button"
-            disabled={access === "loading" || busyId !== null}
-            onClick={() => setRefreshKey((x) => x + 1)}
-            className="rounded-lg border bg-white px-5 py-3 text-sm hover:bg-slate-100 disabled:opacity-50"
-          >
-            重新整理
-          </button>
+          {access === "staff" && (
+            <button
+              type="button"
+              onClick={() => void loadReports()}
+              disabled={
+                loadingReports ||
+                busyId !== null
+              }
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-medium hover:bg-slate-100 disabled:opacity-50"
+            >
+              {loadingReports
+                ? "整理中..."
+                : "重新整理"}
+            </button>
+          )}
         </div>
 
-        {/* 載入中 */}
-        {access === "loading" && (
-          <div className="mt-8 rounded-xl bg-white p-10 text-center">
-            正在檢查工作人員權限...
+        {/* ====================================
+            權限確認中
+           ==================================== */}
+
+        {access === "checking" && (
+          <div className="mt-8 rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500">
+            正在確認工作人員權限...
           </div>
         )}
 
-        {/* 尚未登入 */}
-        {access === "login" && (
-          <div className="mt-8 rounded-xl bg-white p-10 text-center">
-            <h2 className="text-xl font-bold">
+        {/* ====================================
+            未登入
+           ==================================== */}
+
+        {access === "guest" && (
+          <div className="mt-8 rounded-xl border border-amber-200 bg-white p-8 text-center">
+
+            <h2 className="text-xl font-bold text-amber-700">
               請先登入
             </h2>
 
-            <p className="mt-3 text-slate-500">
-              工作人員必須登入才能使用管理功能。
+            <p className="mt-2 text-slate-500">
+              工作人員管理系統需要登入後使用。
             </p>
 
             <Link
               href="/login"
-              className="mt-5 inline-block rounded-lg bg-blue-700 px-6 py-3 text-white"
+              className="mt-5 inline-block rounded-lg bg-blue-700 px-5 py-2.5 text-white hover:bg-blue-800"
             >
               前往登入
             </Link>
+
           </div>
         )}
 
-        {/* 非工作人員 */}
+        {/* ====================================
+            一般學生沒有權限
+           ==================================== */}
+
         {access === "denied" && (
-          <div className="mt-8 rounded-xl border border-red-200 bg-white p-10 text-center">
+          <div className="mt-8 rounded-xl border border-red-200 bg-white p-8 text-center">
+
             <h2 className="text-xl font-bold text-red-700">
               沒有工作人員權限
             </h2>
 
-            <p className="mt-3 text-slate-500">
+            <p className="mt-2 text-slate-500">
               此帳號未被授權使用工作人員管理系統。
             </p>
+
+            <Link
+              href="/reports"
+              className="mt-5 inline-block text-sm font-medium text-blue-700 hover:underline"
+            >
+              返回學生通報列表 →
+            </Link>
+
           </div>
         )}
 
-        {/* 錯誤 */}
-        {error && (
-          <div
-            role="alert"
-            className="mt-6 rounded-lg border border-red-200 bg-red-50 p-4 text-red-700"
-          >
-            {error}
-          </div>
-        )}
+        {/* ====================================
+            權限驗證錯誤
+           ==================================== */}
 
         {access === "error" && (
-          <p className="mt-4 text-slate-500">
-            請確認 Supabase 資料表、RLS 及連線設定。
-          </p>
-        )}
+          <div className="mt-8 rounded-xl border border-red-200 bg-white p-6">
 
-        {/* 成功訊息 */}
-        {message && access === "staff" && (
-          <div
-            role="status"
-            className="mt-6 rounded-lg border border-green-200 bg-green-50 p-4 text-green-800"
-          >
-            {message}
+            <p className="font-semibold text-red-700">
+              確認權限時發生錯誤
+            </p>
+
+            <p className="mt-2 break-words text-sm text-slate-600">
+              {accessError}
+            </p>
+
+            <button
+              type="button"
+              onClick={() => void checkAccess()}
+              className="mt-4 rounded-lg bg-blue-700 px-4 py-2 text-sm text-white"
+            >
+              重試
+            </button>
+
           </div>
         )}
+
+        {/* ====================================
+            Staff 管理功能
+           ==================================== */}
 
         {access === "staff" && (
           <>
-            {/* 統計區域 */}
-            <div className="mt-8 grid gap-4 sm:grid-cols-3">
-              <div className="rounded-xl border bg-white p-6">
-                <p className="text-sm text-slate-500">
-                  待處理
-                </p>
-                <p className="mt-2 text-3xl font-bold text-yellow-700">
-                  {submittedCount}
-                </p>
-              </div>
 
-              <div className="rounded-xl border bg-white p-6">
-                <p className="text-sm text-slate-500">
-                  處理中
-                </p>
-                <p className="mt-2 text-3xl font-bold text-blue-700">
-                  {progressCount}
-                </p>
-              </div>
+            {/* 狀態統計 */}
+            <div className="mt-7 grid gap-3 sm:grid-cols-3">
 
-              <div className="rounded-xl border bg-white p-6">
-                <p className="text-sm text-slate-500">
-                  已結案
-                </p>
-                <p className="mt-2 text-3xl font-bold text-green-700">
-                  {resolvedCount}
-                </p>
-              </div>
+              {[
+                {
+                  status: "Submitted" as const,
+                  value: counts.Submitted,
+                  color: "text-amber-700",
+                },
+                {
+                  status: "In Progress" as const,
+                  value: counts["In Progress"],
+                  color: "text-blue-700",
+                },
+                {
+                  status: "Resolved" as const,
+                  value: counts.Resolved,
+                  color: "text-emerald-700",
+                },
+              ].map((item) => (
+                <div
+                  key={item.status}
+                  className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"
+                >
+                  <p className="text-sm text-slate-500">
+                    {statusText[item.status]}
+                  </p>
+
+                  <p
+                    className={`mt-1 text-3xl font-bold ${item.color}`}
+                  >
+                    {item.value}
+                  </p>
+                </div>
+              ))}
+
             </div>
 
-            {/* 狀態篩選 */}
-            <div className="mt-8 flex flex-wrap gap-3">
-              {(
-                [
-                  ["All", "全部"],
-                  ["Submitted", "待處理"],
-                  ["In Progress", "處理中"],
-                  ["Resolved", "已結案"],
-                ] as const
-              ).map(([value, label]) => (
+            {/* =================================
+                狀態篩選
+               ================================= */}
+
+            <div className="mt-7 flex flex-wrap gap-3">
+
+              {[
+                {
+                  key: "All" as const,
+                  title: "全部",
+                },
+                {
+                  key: "Submitted" as const,
+                  title: "待處理",
+                },
+                {
+                  key: "In Progress" as const,
+                  title: "處理中",
+                },
+                {
+                  key: "Resolved" as const,
+                  title: "已結案",
+                },
+              ].map((item) => (
                 <button
-                  key={value}
+                  key={item.key}
                   type="button"
-                  onClick={() => setFilter(value)}
+                  onClick={() => setFilter(item.key)}
+                  aria-pressed={filter === item.key}
                   className={
-                    filter === value
-                      ? "rounded-lg bg-blue-700 px-5 py-2 text-sm text-white"
-                      : "rounded-lg border bg-white px-5 py-2 text-sm hover:bg-slate-100"
+                    filter === item.key
+                      ? "rounded-lg bg-blue-700 px-4 py-2 text-sm font-semibold text-white"
+                      : "rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-100"
                   }
                 >
-                  {label}
+                  {item.title}
                 </button>
               ))}
+
             </div>
 
-            <p className="mt-5 text-sm text-slate-500">
-              顯示 {visibleReports.length} 筆通報
-              （最多讀取最新 100 筆）
-            </p>
-
-            {visibleReports.length === 0 && (
-              <div className="mt-5 rounded-xl bg-white p-10 text-center text-slate-500">
-                目前沒有符合條件的通報。
+            {/* 成功或錯誤訊息 */}
+            {notice && (
+              <div
+                role={
+                  notice.type === "error"
+                    ? "alert"
+                    : "status"
+                }
+                className={
+                  notice.type === "error"
+                    ? "mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+                    : "mt-5 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800"
+                }
+              >
+                {notice.text}
               </div>
             )}
 
-            {/* S6：通報管理卡片 */}
-            <div className="mt-5 space-y-5">
+            {/* 讀取資料錯誤 */}
+            {reportsError && (
+              <div
+                role="alert"
+                className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+              >
+                讀取通報失敗：{reportsError}
+              </div>
+            )}
+
+            {/* 通報數量 */}
+            <p className="mt-5 text-sm text-slate-500">
+              顯示 {visibleReports.length} 筆通報
+              （最多讀取最近 100 筆）
+            </p>
+
+            {/* =================================
+                通報列表
+               ================================= */}
+
+            <div className="mt-4 space-y-5">
+
+              {/* 載入中 */}
+              {loadingReports &&
+                reports.length === 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500">
+                    正在載入通報...
+                  </div>
+                )}
+
+              {/* 沒有資料 */}
+              {!loadingReports &&
+                !reportsError &&
+                visibleReports.length === 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-slate-500">
+                    目前沒有符合條件的通報。
+                  </div>
+                )}
+
+              {/* 每一筆通報 */}
               {visibleReports.map((report) => {
-                const statusInfo =
-                  getStatusInfo(report.status);
+
+                const isBusy =
+                  busyId === report.id;
+
+                const controlsDisabled =
+                  busyId !== null ||
+                  loadingReports;
 
                 return (
                   <article
                     key={report.id}
-                    className="rounded-xl border border-slate-200 bg-white p-7 shadow-sm"
+                    className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm"
                   >
+
+                    {/* 通報資訊 */}
                     <div className="flex flex-wrap items-start justify-between gap-4">
+
                       <div className="min-w-0 flex-1">
-                        <h2 className="text-xl font-bold">
+
+                        <h2 className="break-words text-xl font-semibold">
                           {report.title}
                         </h2>
 
                         <p className="mt-3 text-sm text-slate-500">
                           分類：{report.category}
-                          {"　"}地點：{report.location}
+                          {"　"}
+                          地點：{report.location}
                         </p>
 
-                        <p className="mt-2 text-sm text-slate-400">
+                        <p className="mt-2 text-xs text-slate-400">
                           通報時間：
                           {formatDate(report.created_at)}
                         </p>
+
                       </div>
 
+                      {/* 狀態標籤 */}
                       <span
-                        className={`rounded-full px-4 py-2 text-sm ${statusInfo.color}`}
+                        className={`shrink-0 rounded-full px-4 py-2 text-sm font-medium ${
+                          statusStyle[report.status] ??
+                          "bg-slate-100 text-slate-700"
+                        }`}
                       >
-                        {statusInfo.label}
+                        {statusText[report.status] ??
+                          report.status}
                       </span>
+
                     </div>
 
-                    <div className="mt-5 border-t pt-5">
+                    {/* 問題描述 */}
+                    <div className="mt-5 border-t border-slate-200 pt-5">
+
                       <h3 className="font-semibold">
                         問題描述
                       </h3>
 
-                      <p className="mt-3 whitespace-pre-wrap leading-7 text-slate-600">
+                      <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-slate-600">
                         {report.description}
                       </p>
+
                     </div>
 
-                    {/* S7：開始處理 */}
-                    {report.status === "Submitted" && (
-                      <button
-                        type="button"
-                        disabled={busyId !== null}
-                        onClick={() =>
-                          updateReport(
-                            report,
-                            "In Progress"
-                          )
-                        }
-                        className="mt-6 rounded-lg bg-blue-700 px-6 py-3 font-medium text-white hover:bg-blue-800 disabled:opacity-50"
-                      >
-                        {busyId === report.id
-                          ? "更新中..."
-                          : "開始處理"}
-                      </button>
-                    )}
+                    {/* =================================
+                        In Progress：結案表單
+                       ================================= */}
 
-                    {/* S8：結案 */}
                     {report.status === "In Progress" && (
-                      <div className="mt-6 rounded-lg bg-slate-50 p-5">
+                      <div className="mt-5 rounded-lg bg-slate-50 p-5">
+
                         <label
                           htmlFor={`resolution-${report.id}`}
-                          className="block font-semibold"
+                          className="mb-3 block text-sm font-semibold"
                         >
                           填寫處理結果
                         </label>
 
                         <textarea
                           id={`resolution-${report.id}`}
-                          value={drafts[report.id] ?? ""}
-                          onChange={(e) =>
-                            setDrafts((old) => ({
-                              ...old,
-                              [report.id]: e.target.value,
-                            }))
-                          }
                           rows={4}
                           maxLength={2000}
-                          placeholder="例如：已安排維修並確認設備恢復正常..."
-                          className="mt-3 w-full rounded-lg border border-slate-300 bg-white p-4"
+                          value={drafts[report.id] ?? ""}
+                          onChange={(event) =>
+                            setDrafts((previous) => ({
+                              ...previous,
+                              [report.id]:
+                                event.target.value,
+                            }))
+                          }
+                          disabled={controlsDisabled}
+                          placeholder="例如：已完成維修並確認設備恢復正常..."
+                          className="w-full rounded-lg border border-slate-300 bg-white p-4 text-sm leading-6 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
                         />
 
-                        <button
-                          type="button"
-                          disabled={busyId !== null}
-                          onClick={() =>
-                            updateReport(
-                              report,
-                              "Resolved"
-                            )
-                          }
-                          className="mt-4 rounded-lg bg-green-700 px-6 py-3 font-medium text-white hover:bg-green-800 disabled:opacity-50"
-                        >
-                          {busyId === report.id
-                            ? "結案中..."
-                            : "完成結案"}
-                        </button>
                       </div>
                     )}
 
-                    {/* 已結案結果 */}
+                    {/* =================================
+                        Resolved：已結案結果
+                       ================================= */}
+
                     {report.status === "Resolved" && (
-                      <div className="mt-6 rounded-lg bg-green-50 p-5">
-                        <h3 className="font-semibold text-green-800">
-                          處理完成
+                      <div className="mt-5 rounded-lg bg-emerald-50 p-5">
+
+                        <h3 className="font-semibold text-emerald-900">
+                          處理結果
                         </h3>
 
-                        <p className="mt-3 whitespace-pre-wrap text-green-900">
+                        <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-7 text-slate-700">
                           {report.resolution ||
-                            "未提供處理說明"}
+                            "此通報尚未提供處理結果。"}
                         </p>
+
                       </div>
                     )}
 
-                    <Link
-                      href={`/reports/${report.id}`}
-                      className="mt-5 inline-block text-sm text-blue-700 hover:underline"
-                    >
-                      查看學生端詳細頁面 →
-                    </Link>
+                    {/* =================================
+                        操作按鈕區域
+
+                        gap-5 = 20px 間距
+                        flex-wrap = 手機自動換行
+                       ================================= */}
+
+                    <div className="mt-6 flex flex-wrap items-center gap-5 border-t border-slate-100 pt-5">
+
+                      {/* 開始處理按鈕 */}
+                      {report.status === "Submitted" && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void startProcessing(report)
+                          }
+                          disabled={controlsDisabled}
+                          className="rounded-lg bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {isBusy
+                            ? "處理中..."
+                            : "開始處理"}
+                        </button>
+                      )}
+
+                      {/* 完成結案按鈕 */}
+                      {report.status === "In Progress" && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void finishProcessing(report)
+                          }
+                          disabled={controlsDisabled}
+                          className="rounded-lg bg-emerald-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {isBusy
+                            ? "儲存中..."
+                            : "完成結案"}
+                        </button>
+                      )}
+
+                      {/* 查看學生端詳細頁面 */}
+                      <Link
+                        href={`/reports/${encodeURIComponent(
+                          report.id
+                        )}`}
+                        className="inline-flex min-h-10 items-center rounded-lg px-3 py-2 text-sm font-semibold text-blue-700 transition hover:bg-blue-50 hover:text-blue-900"
+                      >
+                        查看學生端詳細頁面 →
+                      </Link>
+
+                    </div>
+
                   </article>
                 );
               })}
+
             </div>
           </>
         )}
-      </section>
+
+      </div>
     </main>
   );
 }
